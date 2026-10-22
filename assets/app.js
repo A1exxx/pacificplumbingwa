@@ -57,7 +57,7 @@
     fromHash();
   }
 
-  // Request form: inline validation, then send to the owner's inbox through FormSubmit.
+  // Request form: inline validation, then send to the owner's inbox through Web3Forms (or the visitor's email app).
   const form = document.querySelector('[data-form]');
   if (form) {
     const fields = [...form.querySelectorAll('[data-required]')];
@@ -93,28 +93,47 @@
       btn.textContent = 'Sending...';
       const err = form.querySelector('[data-form-error]');
       if (err) err.hidden = true;
-      const data = new FormData(form);
+      const val = (sel) => { const el = form.querySelector(sel); return el ? el.value.trim() : ''; };
       const service = form.querySelector('#f-service');
-      data.set('_subject', 'New request from pacificplumbingwa.com: ' + (service && service.value ? service.options[service.selectedIndex].text : 'plumbing'));
-      data.set('_template', 'table');
-      data.set('_captcha', 'false');
+      const serviceText = service && service.value ? service.options[service.selectedIndex].text : 'Not sure yet';
       const src = new URLSearchParams(location.search);
-      ['utm_source', 'utm_content'].forEach((k) => { if (src.get(k)) data.set(k, src.get(k)); });
-      const photo = data.get('photo');
-      if (photo && !photo.size) data.delete('photo');
-      fetch(form.action.replace('formsubmit.co/', 'formsubmit.co/ajax/'), { method: 'POST', body: data, headers: { Accept: 'application/json' } })
-        .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
-        .then(({ ok, j }) => {
-          if (!ok || String(j.success) !== 'true') throw new Error(j.message || 'send failed');
-          form.hidden = true;
-          const done = document.querySelector('[data-success]');
-          done.classList.add('is-on');
-          done.focus();
-        })
+      const lead = {
+        name: val('#f-name'), phone: val('#f-phone'), email: val('#f-email'), town: val('#f-town'),
+        service: serviceText, message: val('#f-issue'),
+        came_from: [src.get('utm_source'), src.get('utm_content')].filter(Boolean).join(' / ') || 'website',
+      };
+      const subject = 'New request from pacificplumbingwa.com: ' + serviceText;
+      const showDone = (viaMail) => {
+        form.hidden = true;
+        const done = document.querySelector('[data-success]');
+        if (viaMail) {
+          done.querySelector('h2').innerHTML = 'Almost done. <em>Press Send in your email app.</em>';
+          done.querySelector('p').textContent = 'Your request is filled in and ready to go. If your email app did not open, call (360) 318-6219.';
+        }
+        done.classList.add('is-on');
+        done.focus();
+      };
+      const viaMail = () => {
+        const body = Object.entries(lead).filter(([, v]) => v).map(([k, v]) => k.replace('_', ' ') + ': ' + v).join(String.fromCharCode(10));
+        location.href = 'mailto:' + form.dataset.to + '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
+        showDone(true);
+      };
+      if (!form.dataset.key) { viaMail(); return; }
+      const stop = new AbortController();
+      const timer = setTimeout(() => stop.abort(), 15000);
+      fetch('https://api.web3forms.com/submit', {
+        method: 'POST', signal: stop.signal,
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(Object.assign({ access_key: form.dataset.key, subject, from_name: 'pacificplumbingwa.com', botcheck: form.querySelector('[name=botcheck]').checked }, lead)),
+      })
+        .then((r) => r.json())
+        .then((j) => { clearTimeout(timer); if (!j.success) throw new Error(j.message); showDone(false); })
         .catch(() => {
+          // Service down or slow: hand the filled-in request to the visitor's email app so it is not lost.
+          clearTimeout(timer);
           btn.disabled = false;
           btn.textContent = 'Send my request';
-          if (err) { err.hidden = false; err.focus && err.focus(); }
+          viaMail();
         });
     });
   }
